@@ -1,0 +1,325 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Cvicenie 2 - EC2 instances & auto-scaling & load-balancing
+
+###########################################################################
+# Useful CloudFormation docs
+###########################################################################
+# functions:         https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/intrinsic-function-reference.html
+# pseudo parameters: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/pseudo-parameter-reference.html
+# pseudo attributes: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-product-attribute-reference.html
+# template sections: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/template-anatomy.html
+###########################################################################
+
+Parameters:
+  Project:
+    Description: Project
+    Type: String
+    Default: FRI
+
+  Environment:
+    Description: Environment
+    Type: String
+    Default: lab
+
+  NetworkStackName:
+    Description: Name of parent network CloudFormation stack
+    Type: String
+    Default: basic-network
+
+  OurPublicIp:
+    Description: Our source public IPv4 address
+    Type: String
+    Default: '86.110.242.46/32'
+
+  ImageId:
+    Description: AMI (Amazon Machine Image) ID
+    Type: String
+    # more info: https://docs.amazonaws.cn/en_us/AWSEC2/latest/UserGuide/finding-an-ami.html
+    # list of usable AMIs can be found in AWS console -> EC2 -> AMI Catalog
+    # Amazon Linux 2 (HVM), Kernel 5.10, SSD Volume Type, eu-west-1
+    Default: ami-02a53b0d62d37a757
+
+  InstanceType:
+    Description: Instance type (number of vCPUs, memory, bandwidth, etc.)
+    Type: String
+    # "t3" family = General purpose, Intel Xeon Platinum 8000 series; "medium" size = 2 vCPUs, 4 GB memory
+    # more info: https://aws.amazon.com/ec2/instance-types/t3/
+    Default: t3.small
+
+  IamInstanceProfileName:
+    Description: Instance IAM profile name
+    Type: String
+    # it's unique in each account. can be found in IAM service as AmazonSSMRoleForInstancesQuickSetup (part of Instance profile ARN)
+    # e.g. c76725a1578383l3622172t1w333290784692-SsmRoleInstanceProfile-apue5UBzE6mA4
+    #Default: c76725a1578383l3622172t1w333290784692-SsmRoleInstanceProfile-iNO9jNUSH0cm
+
+Resources:
+###########################################################################
+### Part 1 - security groups (firewall) & SSH key pair
+###########################################################################
+
+  # AWS docs: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-security-group.html
+  SecurityGroupForPublicInstances:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SecurityGroup for instances in Public subnets
+      VpcId:
+        Fn::ImportValue: !Sub ${NetworkStackName}-VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 22,   ToPort: 22,   CidrIp: !Ref OurPublicIp, Description: Home IP - SSH }
+        - { IpProtocol: tcp, FromPort: 2222, ToPort: 2223, CidrIp: !Ref OurPublicIp, Description: Home IP - SSH to private }
+        - { IpProtocol: tcp, FromPort: 8080, ToPort: 8081, CidrIp: !Ref OurPublicIp, Description: Home IP - HTTP to private }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: !Ref OurPublicIp, Description: Home IP - HTTP }
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS - all }
+        - { IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: 0.0.0.0/0, Description: HTTP - all }
+        - { IpProtocol: tcp, FromPort: 22,  ToPort: 22,  CidrIp: { Fn::ImportValue: !Sub '${NetworkStackName}-VpcCidr' }, Description: SSH - VPC }
+
+  SecurityGroupForPrivateInstances:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SecurityGroup for instances in Private subnets
+      VpcId:
+        Fn::ImportValue: !Sub ${NetworkStackName}-VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: { Fn::ImportValue: !Sub '${NetworkStackName}-VpcCidr' }, Description: HTTP - VPC }
+        - { IpProtocol: tcp, FromPort: 22,  ToPort: 22,  CidrIp: { Fn::ImportValue: !Sub '${NetworkStackName}-VpcCidr' }, Description: SSH - VPC }
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS - all }
+        - { IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: 0.0.0.0/0, Description: HTTP - all }
+      Tags:
+        - Key: Name
+          Value: SecurityGroupForPrivateInstances
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref Project
+
+  # AWS docs: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-keypair.html
+  # private key (to import to your local machine) will be able to find in AWS console -> Systems Manager -> Parameter Store
+  # with parameter name '/ec2/keypair/{key_pair_id}'
+  SSHKeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: SSHKeyPair
+      KeyType: rsa
+      Tags:
+        - Key: Name
+          Value: SSHKeyPair
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref Project
+
+###########################################################################
+### Part 2- static EC2 instances
+###########################################################################
+
+  # AWS docs: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-instance.html
+  PublicInstanceA:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      SubnetId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-PublicSubnetAId"
+      SecurityGroupIds:
+        - !Ref SecurityGroupForPublicInstances
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref SSHKeyPair
+      IamInstanceProfile: !Ref IamInstanceProfileName
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+
+            echo 1 > /proc/sys/net/ipv4/ip_forward
+
+            # iptables have to be set manually on instance, since IP of Private Instance will change every deployment
+            # of course it can be done dynamically via AWS CLI :-) but it's out of scope of this lab
+
+            echo "Hello world."
+            echo "This instance was created in environment ${Environment} in region ${AWS::Region}"
+
+          - Environment: !Ref Environment
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp2
+            VolumeSize: 30
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: PublicInstanceA
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref Project
+
+###########################################################################
+### Part 3 - EC2 auto-scaling & load balancing
+###########################################################################
+
+  # AWS docs: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticloadbalancingv2-loadbalancer.html
+  PublicApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: PublicApplicationLoadBalancer
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PublicSubnetAId"
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PublicSubnetBId"
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PublicSubnetCId"
+      SecurityGroups:
+        - !Ref SecurityGroupForPublicInstances
+      Tags:
+        - Key: Name
+          Value: PublicApplicationLoadBalancer
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref Project
+
+  # AWS docs: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-autoscaling-launchconfiguration.html
+  PrivateLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+        - !Ref SecurityGroupForPrivateInstances
+      KeyName: !Ref SSHKeyPair
+      UserData:
+        Fn::Base64:
+          |
+          #!/bin/bash
+
+          yum -y update
+          amazon-linux-extras install -y lamp-mariadb10.2-php7.2 php7.2
+          yum -y install httpd mariadb-server
+
+          systemctl enable httpd
+          systemctl start httpd
+
+          systemctl enable mariadb
+          systemctl start mariadb
+
+          echo '<html><h1>Hello From Your Web Server!</h1></html>' > /var/www/html/index.html
+          find /var/www -type d -exec chmod 2775 {} \;
+          find /var/www -type f -exec chmod 0664 {} \;
+          echo "<?php phpinfo(); ?>" > /var/www/html/phpinfo.php
+
+          usermod -a -G apache ec2-user
+          chown -R ec2-user:apache /var/www
+          chmod 2775 /var/www
+
+          #Check /var/log/cloud-init-output.log after this runs to see errors, if any.
+
+          #
+          # Download and unzip the Mom & Pop Cafe application files.
+          #
+
+          # Database scripts
+          wget https://aws-tc-largeobjects.s3.us-west-2.amazonaws.com/ILT-TF-200-ACSOPS-1/activity-3/momPopDb.tar.gz
+          tar -zxvf momPopDb.tar.gz
+
+          # Web application files
+          wget https://aws-tc-largeobjects.s3.us-west-2.amazonaws.com/ILT-TF-200-ACSOPS-1/activity-3/mompopcafe.tar.gz
+          tar -zxvf mompopcafe.tar.gz -C /var/www/html/
+
+          #
+          # Run the scripts to set the database root password, and create and populate the application database.
+          # Check the following logs to make sure there are no errors:
+          #
+          #       /momPopDb/set-root-password.log
+          #       /momPopDb/create-db.log
+          #
+          cd momPopDb
+          ./set-root-password.sh
+          ./create-db.sh
+          hostnamectl set-hostname web-server
+
+          #
+          # Custom modifications for course IIKS
+          #
+
+          # Enable serverInfo.php page and fix missing info
+          find /var/www/html/mompopcafe/ -type f -name "*.php" -exec sed 's/\/\/include(/include(/' -i {} \;
+          sed 's/showServerInfo = \"false\"/showServerInfo = \"true\"/' -i /var/www/html/mompopcafe/getAppParameters.php
+          sed 's/public-ipv4/local-ipv4/' -i /var/www/html/mompopcafe/serverInfo.php
+          sed "9i\\\t\$az = file_get_contents('http://169.254.169.254/latest/meta-data/placement/availability-zone');" -i /var/www/html/mompopcafe/serverInfo.php
+
+  # AWS docs: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-as-group.html
+  PrivateAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: PrivateAutoScalingGroup
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetAId"
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetBId"
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetCId"
+      LaunchConfigurationName: !Ref PrivateLaunchConfiguration
+      MinSize: 1
+      MaxSize: 4
+      DesiredCapacity: 2
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 60
+      TargetGroupARNs:
+        - !Ref PrivateTargetGroup
+      Tags:
+        - Key: Name
+          Value: PrivateInstanceFromASG
+          PropagateAtLaunch: true
+        - Key: Environment
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+        - Key: Project
+          Value: !Ref Project
+          PropagateAtLaunch: true
+
+  # AWS docs: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticloadbalancingv2-targetgroup.html
+  PrivateTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-VpcId"
+      Protocol: HTTP
+      Port: 80
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: 80
+      HealthCheckPath: '/mompopcafe/index.php'
+      HealthCheckIntervalSeconds: 20
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: 200
+      Tags:
+        - Key: Name
+          Value: PrivateTargetGroup
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref Project
+
+  # AWS docs: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticloadbalancingv2-listener.html
+  PublicALBListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref PublicApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          ForwardConfig:
+            TargetGroups:
+              - TargetGroupArn: !Ref PrivateTargetGroup
+
+Outputs:
+  PrivateAutoScalingGroupId:
+    Value: !Ref PrivateAutoScalingGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateAutoScalingGroupId
