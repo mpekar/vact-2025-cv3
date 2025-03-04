@@ -38,7 +38,7 @@ Parameters:
     # more info: https://docs.amazonaws.cn/en_us/AWSEC2/latest/UserGuide/finding-an-ami.html
     # list of usable AMIs can be found in AWS console -> EC2 -> AMI Catalog
     # Amazon Linux 2 (HVM), Kernel 5.10, SSD Volume Type, us-east-1
-    Default: ami-00a18294952882aa9
+    Default: ami-02a53b0d62d37a757
 
   InstanceType:
     Description: Instance type (number of vCPUs, memory, bandwidth, etc.)
@@ -86,3 +86,39 @@ Resources:
         SecurityGroupEgress:
           - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS - all }
           - { IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: 0.0.0.0/0, Description: HTTP - all }
+
+  SSHKeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: SSHKeyPair
+      KeyType: rsa
+
+  PublicInstanceA:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      SubnetId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-PublicSubnetAId"
+      SecurityGroupIds:
+        - !Ref SecurityGroupForPublicInstances
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref SSHKeyPair
+      IamInstanceProfile: !Ref IamInstanceProfileName
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          echo 1 > /proc/sys/net/ipv4/ip_forward
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp2
+            VolumeSize: 30
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: PublicInstanceA
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref Project
