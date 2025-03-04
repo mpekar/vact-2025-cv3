@@ -122,3 +122,86 @@ Resources:
           Value: !Ref Environment
         - Key: Project
           Value: !Ref Project
+
+  PrivateInstanceA:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      SubnetId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetAId"
+      SecurityGroupIds:
+        - !Ref SecurityGroupForPrivateInstances
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref SSHKeyPair
+      IamInstanceProfile: !Ref IamInstanceProfileName
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+
+            yum -y update
+            yum -y install httpd
+
+            systemctl enable httpd
+            systemctl start httpd
+
+            echo "Hello world."
+            echo "This instance was created in environment ${Environment} in region ${AWS::Region}"
+
+          - Environment:
+              !Ref Environment
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp2
+            VolumeSize: 30
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: PrivateInstanceA
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref Project
+
+  PrivateInstanceB:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      SubnetId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetBId"
+      SecurityGroupIds:
+        - !Ref SecurityGroupForPrivateInstances
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref SSHKeyPair
+      IamInstanceProfile: !Ref IamInstanceProfileName
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+
+            yum -y update
+            yum -y install httpd
+
+            systemctl enable httpd
+            systemctl start httpd
+
+            echo "Hello world."
+            echo "This instance was created in environment ${Environment} in region ${AWS::Region}"
+
+          - Environment: !Ref Environment
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp2
+            VolumeSize: 30
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: PrivateInstanceB
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref Project
