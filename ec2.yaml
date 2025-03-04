@@ -58,3 +58,31 @@ Resources:
 ###########################################################################
 ### Part 1 - security groups (firewall) & SSH key pair
 ###########################################################################
+  SecurityGroupForPublicInstances:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public SG
+      GroupName: SecurityGroupForPublicInstances
+      VpcId:
+        Fn::ImportValue: !Sub ${NetworkStackName}-VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 22,   ToPort: 22,   CidrIp: !Ref OurPublicIp, Description: Our IP - SSH }
+        - { IpProtocol: tcp, FromPort: 2222, ToPort: 2223, CidrIp: !Ref OurPublicIp, Description: Our IP - SSH to private }
+        - { IpProtocol: tcp, FromPort: 8080, ToPort: 8081, CidrIp: !Ref OurPublicIp, Description: Our IP - HTTP to private }
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS - all }
+        - { IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: 0.0.0.0/0, Description: HTTP - all }
+        - { IpProtocol: tcp, FromPort: 22,  ToPort: 22,  CidrIp: { Fn::ImportValue: !Sub '${NetworkStackName}-VpcCidr' }, Description: SSH - VPC }
+
+  SecurityGroupForPrivateInstances:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: SecurityGroup for instances in Private subnets
+        VpcId:
+          Fn::ImportValue: !Sub ${NetworkStackName}-VpcId
+        SecurityGroupIngress:
+          - { IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: { Fn::ImportValue: !Sub '${NetworkStackName}-VpcCidr' }, Description: HTTP - VPC }
+          - { IpProtocol: tcp, FromPort: 22,  ToPort: 22,  CidrIp: { Fn::ImportValue: !Sub '${NetworkStackName}-VpcCidr' }, Description: SSH - VPC }
+        SecurityGroupEgress:
+          - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS - all }
+          - { IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: 0.0.0.0/0, Description: HTTP - all }
